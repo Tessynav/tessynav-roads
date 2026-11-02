@@ -1,0 +1,8 @@
+{
+  "sources": {
+    "quebec": "https://download.geofabrik.de/north-america/canada/quebec-latest.osm.pbf"
+  },
+  "regions": [
+    { "name": "Greater Montreal", "source": "quebec", "bbox": [-74.05, 45.30, -73.35, 45.75] }
+  ]
+}
