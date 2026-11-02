@@ -6,7 +6,7 @@ on:
   workflow_dispatch:          # the "Run workflow" button
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -35,6 +35,16 @@ jobs:
         run: python3 build.py download
       - name: Build road tiles
         run: python3 build.py build
+      - name: Save tiles to the tiles branch (replaced every week, no history)
+        run: |
+          cd out
+          git init -q -b tiles
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Road tiles $(date -u +%F)"
+          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" tiles
+          rm -rf .git
       - uses: actions/upload-pages-artifact@v3
         with:
           path: out
