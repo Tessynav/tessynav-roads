@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""TessyNav road tiles builder v1
+"""TessyNav road tiles builder v2
+
+v2: also keeps railway bridges (REM / light rail, metro, trains) for the 3D bridges, and adds a ramp flag
+    to roads and bridges, plus the bridge type (cable-stayed etc.) and layer to bridges.
+
 
 Builds the road tiles the app loads instead of asking Overpass during the drive.
 Same road rules as roads.js (classes, one-way, widths, lanes, crossings, stop signs), so the
@@ -11,10 +15,11 @@ drawn roads look exactly like before. Runs on GitHub Actions every week (see .gi
 Output (published with GitHub Pages at https://tessynav.github.io/tessynav-roads/):
   out/index.json          version, build date, tile sizes, regions covered
   out/p/<px>_<py>.json    one pack = 4 x 4 road cells of 0.005 degrees (about 1.6 x 2.2 km)
-     w  roads   [id, class, oneway, width m, name, first node, last node, lanes, [lng,lat,...]]
+     w  roads   [id, class, oneway, width m, name, first node, last node, lanes, [lng,lat,...], ramp 0/1]
      n  marks   [lng, lat, 'c' crosswalk | 's' stop line]
      c  cells   {"tx,ty": [road numbers in w]}
-     b  bridges and tunnels, same fields as w plus layer (kept for the bridge rebuild, not drawn yet)
+     b  bridges and tunnels: [id, class, oneway, width, name, n0, n1, lanes, [lng,lat,...], layer, ramp, type,
+        kind 'b' bridge / 't' tunnel]; class 'transit' = REM / light rail / metro, 'rail' = trains
      cb cells   {"tx,ty": [numbers in b]}
 """
 import datetime, json, math, os, re, subprocess, sys
@@ -27,6 +32,7 @@ CLS = {'motorway': 'motorway', 'trunk': 'trunk', 'primary': 'primary', 'secondar
        'tertiary': 'tertiary', 'unclassified': 'minor', 'residential': 'minor',
        'living_street': 'minor', 'service': 'service'}
 LINKS = {'motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link'}
+RAIL = {'light_rail': 'transit', 'subway': 'transit', 'monorail': 'transit', 'rail': 'rail'}
 W2 = {'motorway': 11, 'trunk': 10, 'primary': 13, 'secondary': 12, 'tertiary': 11, 'minor': 9.5, 'service': 5.5}
 W1 = {'motorway': 10.5, 'trunk': 9.5, 'primary': 8, 'secondary': 7.5, 'tertiary': 6.5, 'minor': 5.5, 'service': 4}
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -75,6 +81,10 @@ class Roads(osmium.SimpleHandler):
 
     def way(self, w):
         t = w.tags
+        rw = t.get('railway')
+        if rw in RAIL:
+            self.rail_way(w, t, RAIL[rw])
+            return
         hw = t.get('highway')
         if not hw or t.get('area') == 'yes':
             return
@@ -107,10 +117,31 @@ class Roads(osmium.SimpleHandler):
             flat += [round(lng, 6), round(lat, 6)]
         rec = [w.id, cls, ow, round(wd, 1), t.get('name', ''), w.nodes[0].ref, w.nodes[-1].ref, lanes, flat]
         if t.get('bridge', 'no') != 'no' or t.get('tunnel', 'no') != 'no' or t.get('covered') == 'yes':
-            rec.append(lead_int(t.get('layer')))
+            kind = 'b' if t.get('bridge', 'no') != 'no' else 't'
+            rec += [lead_int(t.get('layer')), 1 if ramp else 0, t.get('bridge:structure', ''), kind]
             self.bridges.append(rec)
         else:
+            rec.append(1 if ramp else 0)
             self.ways.append(rec)
+
+    def rail_way(self, w, t, cls):
+        """railway bridges only (the ground tracks are not drawn)"""
+        if t.get('bridge', 'no') == 'no':
+            return
+        if t.get('service') in ('yard', 'siding', 'spur'):
+            return
+        try:
+            pts = [(nd.lon, nd.lat) for nd in w.nodes]
+        except osmium.InvalidLocationError:
+            return
+        if len(pts) < 2:
+            return
+        flat = []
+        for lng, lat in pts:
+            flat += [round(lng, 6), round(lat, 6)]
+        tracks = lead_int(t.get('tracks')) or 1
+        self.bridges.append([w.id, cls, 0, round(4.5 * tracks, 1), t.get('name', ''), w.nodes[0].ref, w.nodes[-1].ref,
+                             tracks, flat, lead_int(t.get('layer')), 0, t.get('bridge:structure', ''), 'b'])
 
 
 def cells_of(flat):
@@ -161,6 +192,7 @@ def build(cfg):
         run(['osmium', 'tags-filter', '--overwrite', '-o', roads, cut,
              'w/highway=motorway,trunk,primary,secondary,tertiary,unclassified,residential,living_street,service,'
              'motorway_link,trunk_link,primary_link,secondary_link,tertiary_link',
+             'w/railway=light_rail,subway,monorail,rail',
              'n/highway=crossing,stop'])
         h = Roads()
         h.apply_file(roads, locations=True)
@@ -193,7 +225,7 @@ def build(cfg):
         total += len(s)
         with open(os.path.join(OUT, 'p', '%d_%d.json' % (px, py)), 'w', encoding='utf-8') as fh:
             fh.write(s)
-    index = {'v': 1, 'built': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%MZ'), 'r3t': R3T, 'pack': PACK,
+    index = {'v': 1, 'rail': 1, 'built': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%MZ'), 'r3t': R3T, 'pack': PACK,
              'regions': [{'name': r['name'], 'bbox': r['bbox']} for r in cfg['regions']], 'packs': len(packs)}
     with open(os.path.join(OUT, 'index.json'), 'w') as fh:
         json.dump(index, fh, separators=(',', ':'))
