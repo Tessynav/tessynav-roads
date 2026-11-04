@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TessyNav road tiles builder v2
+"""TessyNav road tiles builder v3 (v3: parking lots, parking aisles, yield signs with direction)
 
 v2: also keeps railway bridges (REM / light rail, metro, trains) for the 3D bridges, and adds a ramp flag
     to roads and bridges, plus the bridge type (cable-stayed etc.) and layer to bridges.
@@ -63,13 +63,15 @@ def cell(lng, lat):
 class Roads(osmium.SimpleHandler):
     def __init__(self):
         super().__init__()
-        self.ways, self.bridges, self.marks = [], [], []
+        self.ways, self.bridges, self.marks, self.parks = [], [], [], []
 
     def node(self, n):
         t = n.tags
         hw = t.get('highway')
         if hw == 'stop':
             kind = 's'
+        elif hw == 'give_way':
+            kind = 'y'
         elif hw == 'crossing':
             c = t.get('crossing', '') + ' ' + t.get('crossing:markings', '')
             if re.search(r'unmarked|\bno\b', c):
@@ -77,10 +79,30 @@ class Roads(osmium.SimpleHandler):
             kind = 'c'
         else:
             return
-        self.marks.append([round(n.location.lon, 6), round(n.location.lat, 6), kind])
+        d = t.get('direction', '')
+        d = 'f' if d == 'forward' else 'b' if d == 'backward' else ''
+        self.marks.append([round(n.location.lon, 6), round(n.location.lat, 6), kind, d])
+
+    def parking(self, w, t):
+        """surface parking lots as outlines (closed ways); garages and underground parking are not drawn"""
+        if t.get('parking', 'surface') not in ('surface', ''):
+            return
+        try:
+            pts = [(nd.lon, nd.lat) for nd in w.nodes]
+        except osmium.InvalidLocationError:
+            return
+        if len(pts) < 4 or pts[0] != pts[-1]:
+            return
+        flat = []
+        for lng, lat in pts[:-1]:
+            flat += [round(lng, 6), round(lat, 6)]
+        self.parks.append([w.id, flat])
 
     def way(self, w):
         t = w.tags
+        if t.get('amenity') == 'parking':
+            self.parking(w, t)
+            return
         rw = t.get('railway')
         if rw in RAIL:
             self.rail_way(w, t, RAIL[rw])
@@ -90,8 +112,10 @@ class Roads(osmium.SimpleHandler):
             return
         if hw not in CLS and hw not in LINKS:
             return
-        if hw == 'service' and re.search(r'driveway|parking_aisle|drive-through', t.get('service', '')):
+        sv = t.get('service', '')
+        if hw == 'service' and 'driveway' in sv:
             return
+        pa = 1 if (hw == 'service' and re.search(r'parking_aisle|drive-through', sv)) else 0
         ramp = hw in LINKS
         cls = CLS[hw[:-5] if ramp else hw]
         ow = 0
@@ -106,6 +130,8 @@ class Roads(osmium.SimpleHandler):
                 wd = max(3.5 if ow else 6, lanes * 3.4 + (2 if cls == 'minor' and not ow else 0))
             else:
                 wd = road_w(cls, ow, ramp)
+            if pa:
+                wd = 5.5 if not ow else 3.5
         try:
             pts = [(nd.lon, nd.lat) for nd in w.nodes]
         except osmium.InvalidLocationError:
@@ -122,6 +148,7 @@ class Roads(osmium.SimpleHandler):
             self.bridges.append(rec)
         else:
             rec.append(1 if ramp else 0)
+            rec.append(pa)
             self.ways.append(rec)
 
     def rail_way(self, w, t, cls):
@@ -179,7 +206,7 @@ def build(cfg):
 
     def pack(key):
         if key not in packs:
-            packs[key] = {'w': [], 'n': [], 'c': {}, 'b': [], 'cb': {}, '_w': {}, '_b': {}}
+            packs[key] = {'w': [], 'n': [], 'c': {}, 'b': [], 'cb': {}, 'pk': [], '_w': {}, '_b': {}, '_pk': set()}
         return packs[key]
 
     for reg in cfg['regions']:
@@ -193,10 +220,11 @@ def build(cfg):
              'w/highway=motorway,trunk,primary,secondary,tertiary,unclassified,residential,living_street,service,'
              'motorway_link,trunk_link,primary_link,secondary_link,tertiary_link',
              'w/railway=light_rail,subway,monorail,rail',
-             'n/highway=crossing,stop'])
+             'w/amenity=parking',
+             'n/highway=crossing,stop,give_way'])
         h = Roads()
         h.apply_file(roads, locations=True)
-        print(reg['name'], ':', len(h.ways), 'roads,', len(h.bridges), 'bridges/tunnels,', len(h.marks), 'marks', flush=True)
+        print(reg['name'], ':', len(h.ways), 'roads,', len(h.bridges), 'bridges/tunnels,', len(h.marks), 'marks,', len(h.parks), 'parking lots', flush=True)
         for lst, wkey, ckey, seen in ((h.ways, 'w', 'c', '_w'), (h.bridges, 'b', 'cb', '_b')):
             for rec in lst:
                 for cx, cy in cells_of(rec[8]):
@@ -210,12 +238,19 @@ def build(cfg):
         for m in h.marks:
             cx, cy = cell(m[0], m[1])
             pack((cx // PACK, cy // PACK))['n'].append(m)
+        for pk in h.parks:
+            ring = pk[1] + pk[1][:2]
+            for cx, cy in cells_of(ring):
+                P = pack((cx // PACK, cy // PACK))
+                if pk[0] not in P['_pk']:
+                    P['_pk'].add(pk[0])
+                    P['pk'].append(pk)
         for f in (cut, roads):
             os.remove(f)
 
     total = 0
     for (px, py), P in packs.items():
-        for k in ('_w', '_b'):
+        for k in ('_w', '_b', '_pk'):
             del P[k]
         for k in ('c', 'cb'):
             for ck in P[k]:
@@ -225,7 +260,7 @@ def build(cfg):
         total += len(s)
         with open(os.path.join(OUT, 'p', '%d_%d.json' % (px, py)), 'w', encoding='utf-8') as fh:
             fh.write(s)
-    index = {'v': 1, 'rail': 1, 'built': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%MZ'), 'r3t': R3T, 'pack': PACK,
+    index = {'v': 1, 'rail': 1, 'parking': 1, 'yield': 1, 'built': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%MZ'), 'r3t': R3T, 'pack': PACK,
              'regions': [{'name': r['name'], 'bbox': r['bbox']} for r in cfg['regions']], 'packs': len(packs)}
     with open(os.path.join(OUT, 'index.json'), 'w') as fh:
         json.dump(index, fh, separators=(',', ':'))
