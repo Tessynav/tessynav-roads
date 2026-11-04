@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TessyNav road tiles builder v3 (v3: parking lots, parking aisles, yield signs with direction)
+"""TessyNav road tiles builder v4 (v3: parking lots, parking aisles, yield signs with direction; v4: traffic lights)
 
 v2: also keeps railway bridges (REM / light rail, metro, trains) for the 3D bridges, and adds a ramp flag
     to roads and bridges, plus the bridge type (cable-stayed etc.) and layer to bridges.
@@ -72,6 +72,8 @@ class Roads(osmium.SimpleHandler):
             kind = 's'
         elif hw == 'give_way':
             kind = 'y'
+        elif hw == 'traffic_signals':
+            kind = 't'
         elif hw == 'crossing':
             c = t.get('crossing', '') + ' ' + t.get('crossing:markings', '')
             if re.search(r'unmarked|\bno\b', c):
@@ -79,7 +81,7 @@ class Roads(osmium.SimpleHandler):
             kind = 'c'
         else:
             return
-        d = t.get('direction', '')
+        d = t.get('direction', '') or t.get('traffic_signals:direction', '')
         d = 'f' if d == 'forward' else 'b' if d == 'backward' else ''
         self.marks.append([round(n.location.lon, 6), round(n.location.lat, 6), kind, d])
 
@@ -221,7 +223,7 @@ def build(cfg):
              'motorway_link,trunk_link,primary_link,secondary_link,tertiary_link',
              'w/railway=light_rail,subway,monorail,rail',
              'w/amenity=parking',
-             'n/highway=crossing,stop,give_way'])
+             'n/highway=crossing,stop,give_way,traffic_signals'])
         h = Roads()
         h.apply_file(roads, locations=True)
         print(reg['name'], ':', len(h.ways), 'roads,', len(h.bridges), 'bridges/tunnels,', len(h.marks), 'marks,', len(h.parks), 'parking lots', flush=True)
@@ -260,7 +262,7 @@ def build(cfg):
         total += len(s)
         with open(os.path.join(OUT, 'p', '%d_%d.json' % (px, py)), 'w', encoding='utf-8') as fh:
             fh.write(s)
-    index = {'v': 1, 'rail': 1, 'parking': 1, 'yield': 1, 'built': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%MZ'), 'r3t': R3T, 'pack': PACK,
+    index = {'v': 1, 'rail': 1, 'parking': 1, 'yield': 1, 'signals': 1, 'built': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%MZ'), 'r3t': R3T, 'pack': PACK,
              'regions': [{'name': r['name'], 'bbox': r['bbox']} for r in cfg['regions']], 'packs': len(packs)}
     with open(os.path.join(OUT, 'index.json'), 'w') as fh:
         json.dump(index, fh, separators=(',', ':'))
