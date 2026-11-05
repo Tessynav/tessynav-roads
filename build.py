@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TessyNav road tiles builder v4 (v3: parking lots, parking aisles, yield signs with direction; v4: traffic lights)
+"""TessyNav road tiles builder v5 (v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level)
 
 v2: also keeps railway bridges (REM / light rail, metro, trains) for the 3D bridges, and adds a ramp flag
     to roads and bridges, plus the bridge type (cable-stayed etc.) and layer to bridges.
@@ -63,7 +63,7 @@ def cell(lng, lat):
 class Roads(osmium.SimpleHandler):
     def __init__(self):
         super().__init__()
-        self.ways, self.bridges, self.marks, self.parks = [], [], [], []
+        self.ways, self.bridges, self.marks, self.parks, self.remg = [], [], [], [], []
 
     def node(self, n):
         t = n.tags
@@ -154,8 +154,21 @@ class Roads(osmium.SimpleHandler):
             self.ways.append(rec)
 
     def rail_way(self, w, t, cls):
-        """railway bridges only (the ground tracks are not drawn)"""
+        """railway bridges; plus the REM at ground level (so its line is continuous); tunnels are not drawn"""
         if t.get('bridge', 'no') == 'no':
+            rem = 'REM' in (t.get('name', '') + ' ' + t.get('network', '') + ' ' + t.get('operator', ''))
+            if not rem or t.get('tunnel', 'no') != 'no' or t.get('service') in ('yard', 'siding', 'spur', 'crossover'):
+                return
+            try:
+                pts = [(nd.lon, nd.lat) for nd in w.nodes]
+            except osmium.InvalidLocationError:
+                return
+            if len(pts) < 2:
+                return
+            flat = []
+            for lng, lat in pts:
+                flat += [round(lng, 6), round(lat, 6)]
+            self.remg.append([w.id, flat])
             return
         if t.get('service') in ('yard', 'siding', 'spur'):
             return
@@ -208,7 +221,7 @@ def build(cfg):
 
     def pack(key):
         if key not in packs:
-            packs[key] = {'w': [], 'n': [], 'c': {}, 'b': [], 'cb': {}, 'pk': [], '_w': {}, '_b': {}, '_pk': set()}
+            packs[key] = {'w': [], 'n': [], 'c': {}, 'b': [], 'cb': {}, 'pk': [], 'rg': [], '_w': {}, '_b': {}, '_pk': set(), '_rg': set()}
         return packs[key]
 
     for reg in cfg['regions']:
@@ -240,6 +253,12 @@ def build(cfg):
         for m in h.marks:
             cx, cy = cell(m[0], m[1])
             pack((cx // PACK, cy // PACK))['n'].append(m)
+        for rg in h.remg:
+            for cx, cy in cells_of(rg[1]):
+                P = pack((cx // PACK, cy // PACK))
+                if rg[0] not in P['_rg']:
+                    P['_rg'].add(rg[0])
+                    P['rg'].append(rg)
         for pk in h.parks:
             ring = pk[1] + pk[1][:2]
             for cx, cy in cells_of(ring):
@@ -252,7 +271,7 @@ def build(cfg):
 
     total = 0
     for (px, py), P in packs.items():
-        for k in ('_w', '_b', '_pk'):
+        for k in ('_w', '_b', '_pk', '_rg'):
             del P[k]
         for k in ('c', 'cb'):
             for ck in P[k]:
@@ -262,7 +281,7 @@ def build(cfg):
         total += len(s)
         with open(os.path.join(OUT, 'p', '%d_%d.json' % (px, py)), 'w', encoding='utf-8') as fh:
             fh.write(s)
-    index = {'v': 1, 'rail': 1, 'parking': 1, 'yield': 1, 'signals': 1, 'built': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%MZ'), 'r3t': R3T, 'pack': PACK,
+    index = {'v': 1, 'rail': 1, 'parking': 1, 'yield': 1, 'signals': 1, 'remground': 1, 'built': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%MZ'), 'r3t': R3T, 'pack': PACK,
              'regions': [{'name': r['name'], 'bbox': r['bbox']} for r in cfg['regions']], 'packs': len(packs)}
     with open(os.path.join(OUT, 'index.json'), 'w') as fh:
         json.dump(index, fh, separators=(',', ':'))
