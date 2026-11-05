@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""TessyNav road tiles builder v5 (v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level)
+"""TessyNav road tiles builder v6 (v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
+v6: speed limits (OpenStreetMap maxspeed, km/h) as the last field of every road and bridge record, 0 = not recorded)
 
 v2: also keeps railway bridges (REM / light rail, metro, trains) for the 3D bridges, and adds a ramp flag
     to roads and bridges, plus the bridge type (cable-stayed etc.) and layer to bridges.
@@ -36,6 +37,20 @@ RAIL = {'light_rail': 'transit', 'subway': 'transit', 'monorail': 'transit', 'ra
 W2 = {'motorway': 11, 'trunk': 10, 'primary': 13, 'secondary': 12, 'tertiary': 11, 'minor': 9.5, 'service': 5.5}
 W1 = {'motorway': 10.5, 'trunk': 9.5, 'primary': 8, 'secondary': 7.5, 'tertiary': 6.5, 'minor': 5.5, 'service': 4}
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def speed_kmh(t):
+    """the posted speed limit in km/h from OpenStreetMap tags ('50', '50 km/h', '30 mph'); 0 when not recorded.
+    A road with different limits per direction keeps the forward one."""
+    v = t.get('maxspeed') or t.get('maxspeed:forward') or ''
+    m = re.match(r'\s*(\d+(?:\.\d+)?)\s*(mph|km/h|kmh|kph)?', v)
+    if not m:
+        return 0
+    n = float(m.group(1))
+    if m.group(2) == 'mph':
+        n *= 1.609
+    n = int(round(n))
+    return n if 5 <= n <= 130 else 0
 DATA = os.path.join(HERE, 'data')
 OUT = os.path.join(HERE, 'out')
 
@@ -144,13 +159,15 @@ class Roads(osmium.SimpleHandler):
         for lng, lat in pts:
             flat += [round(lng, 6), round(lat, 6)]
         rec = [w.id, cls, ow, round(wd, 1), t.get('name', ''), w.nodes[0].ref, w.nodes[-1].ref, lanes, flat]
+        lim = speed_kmh(t)
         if t.get('bridge', 'no') != 'no' or t.get('tunnel', 'no') != 'no' or t.get('covered') == 'yes':
             kind = 'b' if t.get('bridge', 'no') != 'no' else 't'
-            rec += [lead_int(t.get('layer')), 1 if ramp else 0, t.get('bridge:structure', ''), kind]
+            rec += [lead_int(t.get('layer')), 1 if ramp else 0, t.get('bridge:structure', ''), kind, lim]
             self.bridges.append(rec)
         else:
             rec.append(1 if ramp else 0)
             rec.append(pa)
+            rec.append(lim)
             self.ways.append(rec)
 
     def rail_way(self, w, t, cls):
