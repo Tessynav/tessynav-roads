@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""TessyNav road tiles builder v6 (v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
-v6: speed limits (OpenStreetMap maxspeed, km/h) as the last field of every road and bridge record, 0 = not recorded)
+"""TessyNav road tiles builder v7 (v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
+v6: speed limits (OpenStreetMap maxspeed, km/h) as the last field of every road and bridge record, 0 = not recorded;
+v7: railway level crossings as marks ('r'), and out/radars.json: Transports Quebec's photo radars and red-light cameras)
 
 v2: also keeps railway bridges (REM / light rail, metro, trains) for the 3D bridges, and adds a ramp flag
     to roads and bridges, plus the bridge type (cable-stayed etc.) and layer to bridges.
@@ -17,13 +18,13 @@ Output (published with GitHub Pages at https://tessynav.github.io/tessynav-roads
   out/index.json          version, build date, tile sizes, regions covered
   out/p/<px>_<py>.json    one pack = 4 x 4 road cells of 0.005 degrees (about 1.6 x 2.2 km)
      w  roads   [id, class, oneway, width m, name, first node, last node, lanes, [lng,lat,...], ramp 0/1]
-     n  marks   [lng, lat, 'c' crosswalk | 's' stop line]
+     n  marks   [lng, lat, 'c' crosswalk | 's' stop line | 'y' yield | 't' traffic lights | 'r' railway level crossing]
      c  cells   {"tx,ty": [road numbers in w]}
      b  bridges and tunnels: [id, class, oneway, width, name, n0, n1, lanes, [lng,lat,...], layer, ramp, type,
         kind 'b' bridge / 't' tunnel]; class 'transit' = REM / light rail / metro, 'rail' = trains
      cb cells   {"tx,ty": [numbers in b]}
 """
-import datetime, json, math, os, re, subprocess, sys
+import datetime, json, math, os, re, subprocess, sys, time
 import osmium
 
 R3T = 0.005          # road cell size in degrees (same as R3T in roads.js)
@@ -83,7 +84,9 @@ class Roads(osmium.SimpleHandler):
     def node(self, n):
         t = n.tags
         hw = t.get('highway')
-        if hw == 'stop':
+        if t.get('railway') == 'level_crossing':
+            kind = 'r'
+        elif hw == 'stop':
             kind = 's'
         elif hw == 'give_way':
             kind = 'y'
@@ -253,7 +256,8 @@ def build(cfg):
              'motorway_link,trunk_link,primary_link,secondary_link,tertiary_link',
              'w/railway=light_rail,subway,monorail,rail',
              'w/amenity=parking',
-             'n/highway=crossing,stop,give_way,traffic_signals'])
+             'n/highway=crossing,stop,give_way,traffic_signals',
+             'n/railway=level_crossing'])
         h = Roads()
         h.apply_file(roads, locations=True)
         print(reg['name'], ':', len(h.ways), 'roads,', len(h.bridges), 'bridges/tunnels,', len(h.marks), 'marks,', len(h.parks), 'parking lots', flush=True)
@@ -310,6 +314,37 @@ def build(cfg):
     print('Wrote', len(packs), 'packs,', round(total / 1e6, 1), 'MB', flush=True)
 
 
+RADARS_URL = ('https://ws.mapserver.transports.gouv.qc.ca/swtq?service=wfs&version=2.0.0&request=getfeature'
+              '&typename=ms:radars_photos&srsname=EPSG:4326&outputformat=geojson')
+RADAR_DIRS = {'nord-est': 45, 'nord-ouest': 315, 'sud-est': 135, 'sud-ouest': 225, 'nord': 0, 'sud': 180, 'est': 90, 'ouest': 270}
+
+
+def radars():
+    """out/radars.json: Transports Quebec's photo radars and red-light cameras (open data, CC-BY 4.0).
+    Each entry: [lng, lat, kind, direction or -1, site id, description]
+      kind 'f' fixed photo radar | 'r' red-light camera | 'fr' both | 'm' mobile radar zone
+      direction: the compass heading covered (from 'en direction est' etc. in the description), -1 if not given"""
+    import urllib.request
+    with urllib.request.urlopen(RADARS_URL, timeout=60) as r:
+        j = json.load(r)
+    out = []
+    for f in j.get('features', []):
+        p, g = f.get('properties') or {}, f.get('geometry') or {}
+        if g.get('type') != 'Point' or (p.get('dateFinService') or '').strip():
+            continue
+        t = (p.get('typeAppareil') or '').lower()
+        kind = 'fr' if ('fixe' in t and 'feu' in t) else 'r' if 'feu' in t else 'm' if 'mobile' in t else 'f'
+        desc = (p.get('description') or '').strip()
+        m = re.search(r'direction\s+(nord-est|nord-ouest|sud-est|sud-ouest|nord|sud|est|ouest)', desc.lower())
+        site = re.search(r'idSite=(\d+)', p.get('urlImage') or '')
+        lng, lat = g['coordinates'][:2]
+        out.append([round(lng, 6), round(lat, 6), kind, RADAR_DIRS[m.group(1)] if m else -1, int(site.group(1)) if site else 0, desc])
+    os.makedirs(OUT, exist_ok=True)
+    with open(os.path.join(OUT, 'radars.json'), 'w', encoding='utf-8') as fh:
+        json.dump({'date': time.strftime('%Y-%m-%d'), 'source': 'Gouvernement du Quebec, MTMD (CC-BY 4.0)', 'r': out}, fh, ensure_ascii=False, separators=(',', ':'))
+    print('radars:', len(out), flush=True)
+
+
 if __name__ == '__main__':
     cfg = json.load(open(os.path.join(HERE, 'regions.json')))
     step = sys.argv[1] if len(sys.argv) > 1 else 'build'
@@ -317,5 +352,11 @@ if __name__ == '__main__':
         download(cfg)
     elif step == 'build':
         build(cfg)
+        try:
+            radars()   # (a problem with the radar list never stops the road tiles)
+        except Exception as e:
+            print('radars: skipped (' + str(e) + ')', flush=True)
+    elif step == 'radars':
+        radars()
     else:
         sys.exit('use: build.py download | build')
