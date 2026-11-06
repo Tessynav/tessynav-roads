@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TessyNav road tiles builder v7 (v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
+"""TessyNav road tiles builder v8 (v8: schools, for school zone alerts; v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
 v6: speed limits (OpenStreetMap maxspeed, km/h) as the last field of every road and bridge record, 0 = not recorded;
 v7: railway level crossings as marks ('r'), and out/radars.json: Transports Quebec's photo radars and red-light cameras)
 
@@ -79,10 +79,14 @@ def cell(lng, lat):
 class Roads(osmium.SimpleHandler):
     def __init__(self):
         super().__init__()
-        self.ways, self.bridges, self.marks, self.parks, self.remg = [], [], [], [], []
+        self.ways, self.bridges, self.marks, self.parks, self.remg, self.schools = [], [], [], [], [], []
 
     def node(self, n):
         t = n.tags
+        if t.get('amenity') == 'school':
+            # a school mapped as a single point: its place, no outline
+            self.schools.append([-n.id, [round(n.location.lon, 6), round(n.location.lat, 6)], t.get('name', '')[:60]])
+            return
         hw = t.get('highway')
         if t.get('railway') == 'level_crossing':
             kind = 'r'
@@ -118,10 +122,28 @@ class Roads(osmium.SimpleHandler):
             flat += [round(lng, 6), round(lat, 6)]
         self.parks.append([w.id, flat])
 
+    def school(self, w, t):
+        """a school's grounds as an outline (simplified to at most 20 corners), for school zone alerts"""
+        try:
+            pts = [(nd.lon, nd.lat) for nd in w.nodes]
+        except osmium.InvalidLocationError:
+            return
+        if len(pts) < 4 or pts[0] != pts[-1]:
+            return
+        pts = pts[:-1]
+        step = max(1, (len(pts) + 19) // 20)
+        flat = []
+        for lng, lat in pts[::step]:
+            flat += [round(lng, 6), round(lat, 6)]
+        self.schools.append([w.id, flat, t.get('name', '')[:60]])
+
     def way(self, w):
         t = w.tags
         if t.get('amenity') == 'parking':
             self.parking(w, t)
+            return
+        if t.get('amenity') == 'school':
+            self.school(w, t)
             return
         rw = t.get('railway')
         if rw in RAIL:
@@ -238,10 +260,11 @@ def download(cfg):
 def build(cfg):
     os.makedirs(os.path.join(OUT, 'p'), exist_ok=True)
     packs = {}
+    nschools = [0]
 
     def pack(key):
         if key not in packs:
-            packs[key] = {'w': [], 'n': [], 'c': {}, 'b': [], 'cb': {}, 'pk': [], 'rg': [], '_w': {}, '_b': {}, '_pk': set(), '_rg': set()}
+            packs[key] = {'w': [], 'n': [], 'c': {}, 'b': [], 'cb': {}, 'pk': [], 'rg': [], 'sc': [], '_w': {}, '_b': {}, '_pk': set(), '_rg': set(), '_sc': set()}
         return packs[key]
 
     for reg in cfg['regions']:
@@ -256,11 +279,12 @@ def build(cfg):
              'motorway_link,trunk_link,primary_link,secondary_link,tertiary_link',
              'w/railway=light_rail,subway,monorail,rail',
              'w/amenity=parking',
+             'w/amenity=school', 'n/amenity=school',
              'n/highway=crossing,stop,give_way,traffic_signals',
              'n/railway=level_crossing'])
         h = Roads()
         h.apply_file(roads, locations=True)
-        print(reg['name'], ':', len(h.ways), 'roads,', len(h.bridges), 'bridges/tunnels,', len(h.marks), 'marks,', len(h.parks), 'parking lots', flush=True)
+        print(reg['name'], ':', len(h.ways), 'roads,', len(h.bridges), 'bridges/tunnels,', len(h.marks), 'marks,', len(h.parks), 'parking lots,', len(h.schools), 'schools', flush=True)
         for lst, wkey, ckey, seen in ((h.ways, 'w', 'c', '_w'), (h.bridges, 'b', 'cb', '_b')):
             for rec in lst:
                 for cx, cy in cells_of(rec[8]):
@@ -287,12 +311,20 @@ def build(cfg):
                 if pk[0] not in P['_pk']:
                     P['_pk'].add(pk[0])
                     P['pk'].append(pk)
+        for sc in h.schools:
+            ring = sc[1] + sc[1][:2]
+            for cx, cy in cells_of(ring if len(sc[1]) > 2 else sc[1] + sc[1]):
+                P = pack((cx // PACK, cy // PACK))
+                if sc[0] not in P['_sc']:
+                    P['_sc'].add(sc[0])
+                    P['sc'].append(sc)
+        nschools[0] += len(h.schools)
         for f in (cut, roads):
             os.remove(f)
 
     total = 0
     for (px, py), P in packs.items():
-        for k in ('_w', '_b', '_pk', '_rg'):
+        for k in ('_w', '_b', '_pk', '_rg', '_sc'):
             del P[k]
         for k in ('c', 'cb'):
             for ck in P[k]:
@@ -302,7 +334,7 @@ def build(cfg):
         total += len(s)
         with open(os.path.join(OUT, 'p', '%d_%d.json' % (px, py)), 'w', encoding='utf-8') as fh:
             fh.write(s)
-    index = {'v': 1, 'rail': 1, 'parking': 1, 'yield': 1, 'signals': 1, 'remground': 1, 'built': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%MZ'), 'r3t': R3T, 'pack': PACK,
+    index = {'v': 1, 'rail': 1, 'parking': 1, 'yield': 1, 'signals': 1, 'remground': 1, 'schools': nschools[0], 'built': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%MZ'), 'r3t': R3T, 'pack': PACK,
              'regions': [{'name': r['name'], 'bbox': r['bbox']} for r in cfg['regions']], 'packs': len(packs)}
     with open(os.path.join(OUT, 'index.json'), 'w') as fh:
         json.dump(index, fh, separators=(',', ':'))
