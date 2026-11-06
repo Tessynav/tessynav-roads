@@ -1,0 +1,127 @@
+name: Building coverage check
+
+# Compares, for a list of test areas, how many buildings OpenStreetMap has and how many Overture Maps has
+# (Overture combines OpenStreetMap with Microsoft and Google's AI-detected buildings and other sources).
+# Run it from Actions -> "Building coverage check" -> Run workflow. The results appear as a table on the run's page.
+# It only reads data and changes nothing in the repository or the published tiles.
+
+on:
+  workflow_dispatch:
+    inputs:
+      extra:
+        description: 'Extra area (optional): name;west;south;east;north  e.g.  My street;-73.44;45.58;-73.43;45.59'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install the Overture tool
+        run: pip install overturemaps
+      - name: Compare the areas
+        env:
+          EXTRA: ${{ github.event.inputs.extra }}
+        run: |
+          cat > coverage.py <<'PY'
+          import json, os, subprocess, time, urllib.parse, urllib.request
+          AREAS = [
+              # name, west, south, east, north (about 1 x 1 km each; the first one a bit larger)
+              ('Boucherville (Pere-Le Jeune)', -73.445, 45.578, -73.420, 45.597),
+              ('Verdun', -73.577, 45.452, -73.565, 45.461),
+              ('Brossard', -73.475, 45.445, -73.463, 45.454),
+              ('Laval (Chomedey)', -73.756, 45.535, -73.744, 45.544),
+              ('Quebec City (Charlesbourg)', -71.276, 46.855, -71.264, 46.864),
+              ('Gatineau', -75.706, 45.476, -75.694, 45.485),
+              ('Toronto (Scarborough)', -79.256, 43.765, -79.244, 43.774),
+              ('Surrey BC', -122.846, 49.115, -122.834, 49.124),
+              ('Houston suburb', -95.556, 29.755, -95.544, 29.764),
+              ('Lyon suburb (France)', 4.874, 45.735, 4.886, 45.744),
+              ('Dubai', 55.194, 25.095, 55.206, 25.104),
+              ('Cairo (Nasr City)', 31.334, 30.055, 31.346, 30.064),
+              ('Damascus', 36.284, 33.505, 36.296, 33.514),
+              ('Sao Paulo', -46.646, -23.556, -46.634, -23.547),
+          ]
+          ex = os.environ.get('EXTRA', '').strip()
+          if ex:
+              p = [s.strip() for s in ex.split(';')]
+              if len(p) == 5:
+                  AREAS.insert(0, (p[0], float(p[1]), float(p[2]), float(p[3]), float(p[4])))
+
+          def osm_count(w, s, e, n):
+              q = '[out:json][timeout:90];(way["building"](%f,%f,%f,%f);relation["building"](%f,%f,%f,%f););out count;' % (s, w, n, e, s, w, n, e)
+              for url in ('https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'):
+                  try:
+                      req = urllib.request.Request(url, data=urllib.parse.urlencode({'data': q}).encode(), headers={'User-Agent': 'TessyNav coverage check'})
+                      with urllib.request.urlopen(req, timeout=120) as r:
+                          j = json.load(r)
+                      return int(j['elements'][0]['tags']['total'])
+                  except Exception as err:
+                      print('  overpass problem:', err)
+                      time.sleep(10)
+              return None
+
+          def overture(w, s, e, n):
+              out = 'ov.geojson'
+              if os.path.exists(out):
+                  os.remove(out)
+              r = subprocess.run(['overturemaps', 'download', '--bbox=%f,%f,%f,%f' % (w, s, e, n), '-f', 'geojson', '--type=building', '-o', out], capture_output=True, text=True)
+              if r.returncode != 0 or not os.path.exists(out):
+                  print('  overture problem:', r.stderr[-400:])
+                  return None, {}
+              total, by = 0, {}
+              with open(out) as fh:
+                  txt = fh.read().strip()
+              feats = []
+              if txt.startswith('{'):
+                  try:
+                      feats = json.loads(txt).get('features', [])
+                  except Exception:
+                      feats = [json.loads(l) for l in txt.splitlines() if l.strip().startswith('{')]
+              for f in feats:
+                  total += 1
+                  src = (f.get('properties') or {}).get('sources')
+                  if isinstance(src, str):
+                      try:
+                          src = json.loads(src)
+                      except Exception:
+                          src = []
+                  ds = 'unknown'
+                  if src:
+                      ds = (src[0] or {}).get('dataset') or 'unknown'
+                  by[ds] = by.get(ds, 0) + 1
+              return total, by
+
+          rows = []
+          for name, w, s, e, n in AREAS:
+              print(name, flush=True)
+              o = osm_count(w, s, e, n)
+              t, by = overture(w, s, e, n)
+              rows.append((name, o, t, by))
+              time.sleep(3)
+
+          def short(ds):
+              d = ds.lower()
+              return 'OSM' if 'openstreetmap' in d else 'Microsoft' if 'microsoft' in d else 'Google' if 'google' in d else 'Esri' if 'esri' in d else ds
+
+          lines = ['## Building coverage: OpenStreetMap vs Overture', '',
+                   '| Area | OpenStreetMap | Overture | Overture sources | Extra buildings |',
+                   '|---|---:|---:|---|---:|']
+          for name, o, t, by in rows:
+              srcs = ', '.join('%s %d' % (short(k), v) for k, v in sorted(by.items(), key=lambda kv: -kv[1])) or '-'
+              gain = ('+%d%%' % round((t - o) * 100 / o) if o else ('all new' if t else '-')) if (o is not None and t is not None) else '?'
+              lines.append('| %s | %s | %s | %s | %s |' % (name, o if o is not None else '?', t if t is not None else '?', srcs, gain))
+          lines += ['', '_Overture data: Overture Maps Foundation (ODbL / CDLA). OpenStreetMap counts from Overpass._']
+          md = '\n'.join(lines)
+          print(md)
+          with open(os.environ.get('GITHUB_STEP_SUMMARY', 'summary.md'), 'a') as fh:
+              fh.write(md + '\n')
+          PY
+          python3 coverage.py
