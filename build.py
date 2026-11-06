@@ -325,8 +325,19 @@ def radars():
       kind 'f' fixed photo radar | 'r' red-light camera | 'fr' both | 'm' mobile radar zone
       direction: the compass heading covered (from 'en direction est' etc. in the description), -1 if not given"""
     import urllib.request
-    with urllib.request.urlopen(RADARS_URL, timeout=60) as r:
-        j = json.load(r)
+    j, err = None, None
+    for attempt in range(4):   # (identifies itself like a normal browser, with a few tries: the server can refuse or time out)
+        try:
+            req = urllib.request.Request(RADARS_URL, headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) TessyNav tile builder', 'Accept': 'application/json,*/*'})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                j = json.load(r)
+            break
+        except Exception as e:
+            err = e
+            print('radars: try', attempt + 1, 'failed:', e, flush=True)
+            time.sleep(15)
+    if j is None:
+        raise RuntimeError('radar list not available: ' + str(err))
     out = []
     for f in j.get('features', []):
         p, g = f.get('properties') or {}, f.get('geometry') or {}
