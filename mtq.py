@@ -41,6 +41,10 @@ def active_now(text, now):
     t = (text or '').lower().replace('\u00a0', ' ')
     if re.search(r'en tout temps|en continu', t) and not re.search(r'\bentre \d', t):
         return True
+    if 'heures de pointe' in t and not re.search(r'\bentre \d', t):
+        # weekday rush hours (about 6:00 to 9:30 and 15:00 to 18:30)
+        mins = now.hour * 60 + now.minute
+        return now.weekday() < 5 and (360 <= mins < 570 or 900 <= mins < 1110)
     m = re.search(r'entre (\d{1,2}) ?h ?(\d{2})? et (\d{1,2}) ?h ?(\d{2})?', t)
     days = set()
     if 'du lundi au vendredi' in t or 'du luni au vendredi' in t:
