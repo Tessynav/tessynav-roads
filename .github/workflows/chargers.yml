@@ -1,0 +1,35 @@
+name: Chargers (Superchargers from OpenStreetMap)
+
+# Every Monday (and with the Run workflow button): Tesla Superchargers and other fast chargers in Quebec, published as
+# chargers.json on the "chargers" branch, where the app reads it
+# (https://raw.githubusercontent.com/Tessynav/tessynav-roads/chargers/chargers.json).
+
+on:
+  schedule:
+    - cron: '30 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  chargers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fetch the chargers
+        run: python3 chargers.py
+      - name: Publish to the chargers branch
+        run: |
+          mkdir -p /tmp/chg && cp chargers.json /tmp/chg/
+          cd /tmp/chg
+          git init -q -b chargers
+          git config user.name "tessynav-bot"
+          git config user.email "tessynav-bot@users.noreply.github.com"
+          git add chargers.json
+          git commit -q -m "chargers $(date -u +%F)"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" chargers
