@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TessyNav road tiles builder v8 (v8: schools, for school zone alerts; v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
+"""TessyNav road tiles builder v9 (v9: whole provinces as a grid of regions, tiles written region by region and merged at the borders; v8: schools, for school zone alerts; v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
 v6: speed limits (OpenStreetMap maxspeed, km/h) as the last field of every road and bridge record, 0 = not recorded;
 v7: railway level crossings as marks ('r'), and out/radars.json: Transports Quebec's photo radars and red-light cameras)
 
@@ -257,17 +257,85 @@ def download(cfg):
             run(['cp', url, dst])
 
 
+def regions_of(cfg):
+    """the regions to build: plain boxes, or a grid ("step" in degrees) covering a big box, aligned to the tile grid"""
+    out = []
+    for r in cfg['regions']:
+        if not r.get('step'):
+            out.append(r)
+            continue
+        w, s_, e, n = r['bbox']
+        st = r['step']
+        y = s_
+        while y < n - 1e-9:
+            x = w
+            while x < e - 1e-9:
+                out.append({'name': '%s %.2f,%.2f' % (r['name'], x, y), 'source': r['source'],
+                            'bbox': [round(x, 4), round(y, 4), round(min(e, x + st), 4), round(min(n, y + st), 4)]})
+                x += st
+            y += st
+    return out
+
+
+def merge_pack(E, P):
+    """adds pack P (still with its _seen sets) into pack E (already written): roads and bridges by id, with the cell
+    lists renumbered; parking lots, REM pieces and schools by id; marks as a set"""
+    for wkey, ckey in (('w', 'c'), ('b', 'cb')):
+        have = {rec[0]: i for i, rec in enumerate(E[wkey])}
+        remap = {}
+        for j, rec in enumerate(P[wkey]):
+            if rec[0] in have:
+                remap[j] = have[rec[0]]
+            else:
+                remap[j] = len(E[wkey])
+                have[rec[0]] = remap[j]
+                E[wkey].append(rec)
+        for ck, lst in P[ckey].items():
+            E[ckey][ck] = sorted(set(E[ckey].get(ck, [])) | {remap[j] for j in lst})
+    for k in ('pk', 'rg', 'sc'):
+        have = {x[0] for x in E.get(k, [])}
+        E.setdefault(k, [])
+        for x in P[k]:
+            if x[0] not in have:
+                E[k].append(x)
+                have.add(x[0])
+    E['n'] = [list(x) for x in sorted(set(tuple(m) for m in E.get('n', [])) | set(tuple(m) for m in P['n']))]
+    return E
+
+
 def build(cfg):
     os.makedirs(os.path.join(OUT, 'p'), exist_ok=True)
     packs = {}
     nschools = [0]
+    written = set()
+
+    def flush():
+        """writes this region's tiles to disk, merging into tiles an earlier region already wrote (at the borders)"""
+        for (px, py), P in packs.items():
+            path = os.path.join(OUT, 'p', '%d_%d.json' % (px, py))
+            if (px, py) in written:
+                with open(path, encoding='utf-8') as fh:
+                    E = json.load(fh)
+                E = merge_pack(E, P)
+            else:
+                E = {k: v for k, v in P.items() if not k.startswith('_')}
+                for k in ('c', 'cb'):
+                    for ck in E[k]:
+                        E[k][ck] = sorted(set(E[k][ck]))
+                E['n'] = [list(x) for x in sorted(set(tuple(m) for m in E['n']))]
+            with open(path, 'w', encoding='utf-8') as fh:
+                fh.write(json.dumps(E, separators=(',', ':'), ensure_ascii=False))
+            written.add((px, py))
+        packs.clear()
 
     def pack(key):
         if key not in packs:
             packs[key] = {'w': [], 'n': [], 'c': {}, 'b': [], 'cb': {}, 'pk': [], 'rg': [], 'sc': [], '_w': {}, '_b': {}, '_pk': set(), '_rg': set(), '_sc': set()}
         return packs[key]
 
-    for reg in cfg['regions']:
+    regs = regions_of(cfg)
+    print('regions to build:', len(regs), flush=True)
+    for ri, reg in enumerate(regs):
         b = reg['bbox']
         src = os.path.join(DATA, reg['source'] + '.osm.pbf')
         cut = os.path.join(DATA, 'cut.osm.pbf')
@@ -321,21 +389,12 @@ def build(cfg):
         nschools[0] += len(h.schools)
         for f in (cut, roads):
             os.remove(f)
+        flush()
+        print('  region %d of %d done, tiles so far: %d' % (ri + 1, len(regs), len(written)), flush=True)
 
-    total = 0
-    for (px, py), P in packs.items():
-        for k in ('_w', '_b', '_pk', '_rg', '_sc'):
-            del P[k]
-        for k in ('c', 'cb'):
-            for ck in P[k]:
-                P[k][ck] = sorted(set(P[k][ck]))
-        P['n'] = [list(x) for x in sorted(set(tuple(m) for m in P['n']))]
-        s = json.dumps(P, separators=(',', ':'), ensure_ascii=False)
-        total += len(s)
-        with open(os.path.join(OUT, 'p', '%d_%d.json' % (px, py)), 'w', encoding='utf-8') as fh:
-            fh.write(s)
+    total = sum(os.path.getsize(os.path.join(OUT, 'p', f)) for f in os.listdir(os.path.join(OUT, 'p')))
     index = {'v': 1, 'rail': 1, 'parking': 1, 'yield': 1, 'signals': 1, 'remground': 1, 'schools': nschools[0], 'built': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%MZ'), 'r3t': R3T, 'pack': PACK,
-             'regions': [{'name': r['name'], 'bbox': r['bbox']} for r in cfg['regions']], 'packs': len(packs)}
+             'regions': [{'name': r['name'], 'bbox': r['bbox']} for r in cfg['regions']], 'packs': len(written)}
     with open(os.path.join(OUT, 'index.json'), 'w') as fh:
         json.dump(index, fh, separators=(',', ':'))
     open(os.path.join(OUT, '.nojekyll'), 'w').close()
@@ -343,7 +402,9 @@ def build(cfg):
         fh.write('<!doctype html><meta charset="utf-8"><title>TessyNav roads</title>'
                  '<p>TessyNav road tiles, built %s from OpenStreetMap data &copy; OpenStreetMap contributors (ODbL).</p>'
                  % index['built'])
-    print('Wrote', len(packs), 'packs,', round(total / 1e6, 1), 'MB', flush=True)
+    print('Wrote', len(written), 'packs,', round(total / 1e6, 1), 'MB', flush=True)
+    if total > 950e6:
+        print('WARNING: over 950 MB, too big for GitHub Pages (1 GB): trim the regions', flush=True)
 
 
 RADARS_URL = ('https://ws.mapserver.transports.gouv.qc.ca/swtq?service=wfs&version=2.0.0&request=getfeature'
