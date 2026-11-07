@@ -17,7 +17,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 330
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
@@ -35,8 +35,10 @@ jobs:
         run: python3 build.py download
       - name: Build road tiles
         run: python3 build.py build
-      - name: Save tiles to the tiles branch (replaced every week, no history)
+      - name: Save tiles to the tiles branch (replaced every week, no history; skipped when the tiles are big)
         run: |
+          du -sh out
+          if [ "$(du -sm out | cut -f1)" -gt 400 ]; then echo "Tiles over 400 MB: the tiles branch copy is skipped (GitHub Pages still gets them)"; exit 0; fi
           cd out
           git init -q -b tiles
           git config user.name "github-actions[bot]"
