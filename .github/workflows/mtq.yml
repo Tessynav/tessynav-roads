@@ -1,0 +1,38 @@
+name: Live road events (Transports Québec)
+
+# Every 15 minutes: Transports Québec warnings and road works that are active now, published as mtq.json on the
+# "live" branch, where the app reads it (https://raw.githubusercontent.com/Tessynav/tessynav-roads/live/mtq.json).
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mtq
+  cancel-in-progress: true
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fetch the active events
+        run: python3 mtq.py
+      - name: Publish to the live branch
+        run: |
+          mkdir -p /tmp/live && cp mtq.json /tmp/live/
+          cd /tmp/live
+          git init -q -b live
+          git config user.name "tessynav-bot"
+          git config user.email "tessynav-bot@users.noreply.github.com"
+          git add mtq.json
+          git commit -q -m "live events $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" live
