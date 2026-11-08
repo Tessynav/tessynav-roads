@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TessyNav road tiles builder v9 (v9: whole provinces as a grid of regions, tiles written region by region and merged at the borders; v8: schools, for school zone alerts; v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
+"""TessyNav road tiles builder v10 (v10: highway exits, for the green exit signs; v9: v9: whole provinces as a grid of regions, tiles written region by region and merged at the borders; v8: schools, for school zone alerts; v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
 v6: speed limits (OpenStreetMap maxspeed, km/h) as the last field of every road and bridge record, 0 = not recorded;
 v7: railway level crossings as marks ('r'), and out/radars.json: Transports Quebec's photo radars and red-light cameras)
 
@@ -23,6 +23,9 @@ Output (published with GitHub Pages at https://tessynav.github.io/tessynav-roads
      b  bridges and tunnels: [id, class, oneway, width, name, n0, n1, lanes, [lng,lat,...], layer, ramp, type,
         kind 'b' bridge / 't' tunnel]; class 'transit' = REM / light rail / metro, 'rail' = trains
      cb cells   {"tx,ty": [numbers in b]}
+     x  highway exits (v10): [node id, lng, lat, exit number, destinations, route numbers, exit name] at the point
+        where an exit ramp leaves a motorway or trunk; destinations and route numbers are ';'-separated, from the
+        ramp's destination / destination:ref tags (or the exit's exit_to), '' when not mapped
 """
 import datetime, json, math, os, re, subprocess, sys, time
 import osmium
@@ -80,6 +83,9 @@ class Roads(osmium.SimpleHandler):
     def __init__(self):
         super().__init__()
         self.ways, self.bridges, self.marks, self.parks, self.remg, self.schools = [], [], [], [], [], []
+        # highway exits (v10): exit points, the ramps' signed destinations by the node they start at, and the
+        # nodes of motorways and trunks (a ramp with destinations starting on one of them is an exit too)
+        self.junctions, self.dests, self.hwnodes = {}, {}, set()
 
     def node(self, n):
         t = n.tags
@@ -88,6 +94,10 @@ class Roads(osmium.SimpleHandler):
             self.schools.append([-n.id, [round(n.location.lon, 6), round(n.location.lat, 6)], t.get('name', '')[:60]])
             return
         hw = t.get('highway')
+        if hw == 'motorway_junction':
+            self.junctions[n.id] = [round(n.location.lon, 6), round(n.location.lat, 6), t.get('ref', '')[:12],
+                                    t.get('exit_to', '')[:120], t.get('name', '')[:60]]
+            return
         if t.get('railway') == 'level_crossing':
             kind = 'r'
         elif hw == 'stop':
@@ -184,6 +194,15 @@ class Roads(osmium.SimpleHandler):
         for lng, lat in pts:
             flat += [round(lng, 6), round(lat, 6)]
         rec = [w.id, cls, ow, round(wd, 1), t.get('name', ''), w.nodes[0].ref, w.nodes[-1].ref, lanes, flat]
+        if cls in ('motorway', 'trunk') and not ramp:
+            self.hwnodes.update(nd.ref for nd in w.nodes)
+        if ramp and cls in ('motorway', 'trunk', 'primary'):
+            d = t.get('destination', '') or t.get('destination:street', '')
+            r = t.get('destination:ref', '')
+            if d or r:
+                i = -1 if ow == -1 else 0
+                self.dests.setdefault(w.nodes[i].ref, []).append(
+                    (d, r, (pts[i][0], pts[i][1])))
         lim = speed_kmh(t)
         if t.get('bridge', 'no') != 'no' or t.get('tunnel', 'no') != 'no' or t.get('covered') == 'yes':
             kind = 'b' if t.get('bridge', 'no') != 'no' else 't'
@@ -226,6 +245,32 @@ class Roads(osmium.SimpleHandler):
         tracks = lead_int(t.get('tracks')) or 1
         self.bridges.append([w.id, cls, 0, round(4.5 * tracks, 1), t.get('name', ''), w.nodes[0].ref, w.nodes[-1].ref,
                              tracks, flat, lead_int(t.get('layer')), 0, t.get('bridge:structure', ''), 'b'])
+
+
+def exits_of(h):
+    """highway exits: every motorway_junction node, plus ramps with signed destinations that start on a motorway or
+    trunk without a junction node; the destinations of all ramps leaving at that point are combined"""
+    def join(parts, n):
+        seen, out = set(), []
+        for p in parts:
+            for x in p.split(';'):
+                x = x.strip()
+                if x and x.lower() not in seen:
+                    seen.add(x.lower())
+                    out.append(x)
+        return ';'.join(out)[:n]
+    out = []
+    for nid, j in h.junctions.items():
+        ds = h.dests.get(nid, [])
+        dest = join([d for d, r, p in ds], 160) or join([j[3]], 160)
+        refs = join([r for d, r, p in ds], 60)
+        out.append([nid, j[0], j[1], j[2], dest, refs, j[4]])
+    for nid, ds in h.dests.items():
+        if nid in h.junctions or nid not in h.hwnodes:
+            continue
+        p = ds[0][2]
+        out.append([nid, round(p[0], 6), round(p[1], 6), '', join([d for d, r, q in ds], 160), join([r for d, r, q in ds], 60), ''])
+    return out
 
 
 def cells_of(flat):
@@ -292,7 +337,7 @@ def merge_pack(E, P):
                 E[wkey].append(rec)
         for ck, lst in P[ckey].items():
             E[ckey][ck] = sorted(set(E[ckey].get(ck, [])) | {remap[j] for j in lst})
-    for k in ('pk', 'rg', 'sc'):
+    for k in ('pk', 'rg', 'sc', 'x'):
         have = {x[0] for x in E.get(k, [])}
         E.setdefault(k, [])
         for x in P[k]:
@@ -330,7 +375,7 @@ def build(cfg):
 
     def pack(key):
         if key not in packs:
-            packs[key] = {'w': [], 'n': [], 'c': {}, 'b': [], 'cb': {}, 'pk': [], 'rg': [], 'sc': [], '_w': {}, '_b': {}, '_pk': set(), '_rg': set(), '_sc': set()}
+            packs[key] = {'w': [], 'n': [], 'c': {}, 'b': [], 'cb': {}, 'pk': [], 'rg': [], 'sc': [], 'x': [], '_w': {}, '_b': {}, '_pk': set(), '_rg': set(), '_sc': set(), '_x': set()}
         return packs[key]
 
     regs = regions_of(cfg)
@@ -348,11 +393,11 @@ def build(cfg):
              'w/railway=light_rail,subway,monorail,rail',
              'w/amenity=parking',
              'w/amenity=school', 'n/amenity=school',
-             'n/highway=crossing,stop,give_way,traffic_signals',
+             'n/highway=crossing,stop,give_way,traffic_signals,motorway_junction',
              'n/railway=level_crossing'])
         h = Roads()
         h.apply_file(roads, locations=True)
-        print(reg['name'], ':', len(h.ways), 'roads,', len(h.bridges), 'bridges/tunnels,', len(h.marks), 'marks,', len(h.parks), 'parking lots,', len(h.schools), 'schools', flush=True)
+        print(reg['name'], ':', len(h.junctions), 'exits,', len(h.dests), 'ramps with destinations,', len(h.ways), 'roads,', len(h.bridges), 'bridges/tunnels,', len(h.marks), 'marks,', len(h.parks), 'parking lots,', len(h.schools), 'schools', flush=True)
         for lst, wkey, ckey, seen in ((h.ways, 'w', 'c', '_w'), (h.bridges, 'b', 'cb', '_b')):
             for rec in lst:
                 for cx, cy in cells_of(rec[8]):
@@ -366,6 +411,13 @@ def build(cfg):
         for m in h.marks:
             cx, cy = cell(m[0], m[1])
             pack((cx // PACK, cy // PACK))['n'].append(m)
+        hx = exits_of(h)
+        for x in hx:
+            cx, cy = cell(x[1], x[2])
+            P = pack((cx // PACK, cy // PACK))
+            if x[0] not in P['_x']:
+                P['_x'].add(x[0])
+                P['x'].append(x)
         for rg in h.remg:
             for cx, cy in cells_of(rg[1]):
                 P = pack((cx // PACK, cy // PACK))
@@ -393,7 +445,7 @@ def build(cfg):
         print('  region %d of %d done, tiles so far: %d' % (ri + 1, len(regs), len(written)), flush=True)
 
     total = sum(os.path.getsize(os.path.join(OUT, 'p', f)) for f in os.listdir(os.path.join(OUT, 'p')))
-    index = {'v': 1, 'rail': 1, 'parking': 1, 'yield': 1, 'signals': 1, 'remground': 1, 'schools': nschools[0], 'built': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%MZ'), 'r3t': R3T, 'pack': PACK,
+    index = {'v': 1, 'exits': 1, 'rail': 1, 'parking': 1, 'yield': 1, 'signals': 1, 'remground': 1, 'schools': nschools[0], 'built': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%MZ'), 'r3t': R3T, 'pack': PACK,
              'regions': [{'name': r['name'], 'bbox': r['bbox']} for r in cfg['regions']], 'packs': len(written)}
     with open(os.path.join(OUT, 'index.json'), 'w') as fh:
         json.dump(index, fh, separators=(',', ':'))
