@@ -9,7 +9,7 @@ and which way along the street (the arrow).
 import csv, io, json, os, re, sys, urllib.request, collections
 
 SIGNS = 'https://donnees.montreal.ca/dataset/8ac6dd33-b0d3-4eab-a334-5a6283eb7940/resource/7f1d4ae9-1a12-46d7-953e-6b9c18c78680/download/signalisation_stationnement.csv'
-BOROUGHS = {'verdun': ['Verdun']}          # (test area; more boroughs later)
+BOROUGHS = {'verdun': ['Verdun'], 'sud-ouest': ['Le Sud-Ouest'], 'ville-marie': ['Ville-Marie']}   # (test areas)
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'parking')   # (kept in the repository: the app reads it from there)
 
 DAYS = {'LUN': 0, 'MAR': 1, 'MER': 2, 'JEU': 3, 'VEN': 4, 'SAM': 5, 'DIM': 6,
@@ -115,6 +115,13 @@ def main():
     raw = urllib.request.urlopen(SIGNS, timeout=300).read().decode('utf-8-sig', 'replace')
     rows = list(csv.DictReader(io.StringIO(raw)))
     print('signs in Montréal: %d' % len(rows), flush=True)
+    # how many signs each borough has in the City's data (some boroughs are incomplete)
+    per = collections.Counter((r.get('NOM_ARROND') or '?').strip() for r in rows)
+    print('signs per borough:', flush=True)
+    for b, c in per.most_common():
+        print('  %6d  %s' % (c, b), flush=True)
+    print('columns:', ', '.join(rows[0].keys()) if rows else '-', flush=True)
+    print('arrow codes:', dict(collections.Counter((r.get('FLECHE_PAN') or '').strip() for r in rows).most_common(8)), flush=True)
     for name, boroughs in BOROUGHS.items():
         want = {b.upper() for b in boroughs}
         out, bad, n = [], collections.Counter(), 0
