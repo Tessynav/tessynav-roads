@@ -68,12 +68,24 @@ def season_of(t):
 
 def parse(desc):
     """one sign's text -> a rule {k: kind, d: days, h: hours, s: season, m: minutes, z: permit zone}, or None
-    kinds: np = no parking, ns = no stopping, lim = time limit, pay = paid parking, perm = permit holders only"""
+    kinds: np = no parking, ns = no stopping, lim = time limit, pay = paid parking, perm = permit holders only,
+           res = reserved (why: handicap, hotel, delivery, taxi, bus, carshare, ev, dropoff)"""
     t = norm(desc)
     if not t:
         return None
     r = {}
-    if t.startswith('\\A') or t.startswith('A ') and 'ARRET' in t or 'ARRET INTERDIT' in t:
+    if 'HANDICAP' in t:
+        r['k'] = 'res'; r['why'] = 'handicap'          # (reserved for disabled parking permits)
+    elif re.search(r'RESERVE|LIVRAISON|DEBARCADERE|TAXI|AUTOBUS|AUTO-PARTAGE|AUTOPARTAGE|VEHICULE ELECTRIQUE|RECHARGE', t) and not re.search(r'\bS\d{1,3}[A-Z]?\b', t):
+        r['k'] = 'res'
+        for w, k in (('HOTEL', 'hotel'), ('LIVRAISON', 'delivery'), ('TAXI', 'taxi'), ('AUTOBUS', 'bus'), ('PARTAGE', 'carshare'),
+                     ('ELECTRIQUE', 'ev'), ('RECHARGE', 'ev'), ('DEBARCADERE', 'dropoff')):
+            if w in t:
+                r['why'] = k; break
+        mm = re.search(r'(\d{1,3})\s*MIN', t)
+        if mm:
+            r['m'] = int(mm.group(1))
+    elif t.startswith('\\A') or t.startswith('A ') and 'ARRET' in t or 'ARRET INTERDIT' in t:
         r['k'] = 'ns'
     elif t.startswith('\\P') or 'STAT INT' in t or 'STATIONNEMENT INTERDIT' in t:
         r['k'] = 'np'
