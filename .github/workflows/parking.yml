@@ -1,0 +1,34 @@
+name: Parking rules (Montréal parking signs)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 9 * * 1'      # every Monday, 09:30 UTC (after the road and charger builds)
+
+permissions:
+  contents: write
+
+concurrency:
+  group: parking
+  cancel-in-progress: false
+
+jobs:
+  parking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Read the City of Montréal parking signs
+        run: python3 parking.py
+      - name: Save the rules in the repository (the app reads them from there)
+        continue-on-error: true
+        run: |
+          git config user.name "tessynav-bot"
+          git config user.email "tessynav-bot@users.noreply.github.com"
+          git add parking/
+          git commit -q -m "Parking rules $(date -u +%F)" || exit 0
+          git pull -q --rebase || true
+          git push -q || echo "Could not save the parking rules"
