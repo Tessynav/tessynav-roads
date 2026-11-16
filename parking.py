@@ -121,10 +121,31 @@ def parse(desc):
     return r
 
 
+def download(url, tries=4):
+    """the City's file, asked for like a web browser (the City's site now refuses Python's default way of asking,
+    HTTP 403), with up to 4 tries a little apart; None if it still can't be had"""
+    import time
+    hdr = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36 TessyNav parking (github.com/Tessynav)',
+           'Accept': 'text/csv,application/octet-stream,*/*', 'Accept-Language': 'fr-CA,fr;q=0.9,en;q=0.8'}
+    for k in range(tries):
+        try:
+            req = urllib.request.Request(url, headers=hdr)
+            return urllib.request.urlopen(req, timeout=300).read().decode('utf-8-sig', 'replace')
+        except Exception as e:
+            print('  try %d: %s' % (k + 1, e), flush=True)
+            time.sleep(20 * (k + 1))
+    return None
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     print('downloading the parking signs...', flush=True)
-    raw = urllib.request.urlopen(SIGNS, timeout=300).read().decode('utf-8-sig', 'replace')
+    raw = download(SIGNS)
+    if raw is None:
+        # the City's site refused or didn't answer: keep last week's rules (the app keeps working) and stop here,
+        # without failing the run, so no error email; it tries again next week
+        print('::warning::Could not download the City parking signs this time; the saved rules are kept.', flush=True)
+        return
     rows = list(csv.DictReader(io.StringIO(raw)))
     print('signs in Montréal: %d' % len(rows), flush=True)
     # how many signs each borough has in the City's data (some boroughs are incomplete)
