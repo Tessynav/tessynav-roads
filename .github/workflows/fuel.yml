@@ -1,0 +1,37 @@
+name: Gas stations (3D canopies, from OpenStreetMap)
+
+# Every Monday (and with the Run workflow button): gas stations in Quebec, written to fuel/fuel.json in this repository
+# (the app reads https://app.mapkoon.com/tessynav-roads/fuel/fuel.json).
+
+on:
+  schedule:
+    - cron: '45 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fuel
+  cancel-in-progress: false
+
+jobs:
+  fuel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Fetch the gas stations
+        run: python3 fuel.py
+      - name: Save them in the repository (the app reads them from there)
+        continue-on-error: true
+        run: |
+          git config user.name "tessynav-bot"
+          git config user.email "tessynav-bot@users.noreply.github.com"
+          git add fuel/
+          git commit -q -m "Gas stations $(date -u +%F)" || exit 0
+          git pull -q --rebase || true
+          git push -q || echo "Could not save the gas stations"
