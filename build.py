@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TessyNav road tiles builder v10 (v10: highway exits, for the green exit signs; v9: v9: whole provinces as a grid of regions, tiles written region by region and merged at the borders; v8: schools, for school zone alerts; v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
+"""TessyNav road tiles builder v11 (v11: lane arrows (turn:lanes) as an extra last field of road and bridge records; v10: highway exits, for the green exit signs; v9: v9: whole provinces as a grid of regions, tiles written region by region and merged at the borders; v8: schools, for school zone alerts; v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
 v6: speed limits (OpenStreetMap maxspeed, km/h) as the last field of every road and bridge record, 0 = not recorded;
 v7: railway level crossings as marks ('r'), and out/radars.json: Transports Quebec's photo radars and red-light cameras)
 
@@ -23,6 +23,10 @@ Output (published with GitHub Pages at https://tessynav.github.io/tessynav-roads
      b  bridges and tunnels: [id, class, oneway, width, name, n0, n1, lanes, [lng,lat,...], layer, ramp, type,
         kind 'b' bridge / 't' tunnel]; class 'transit' = REM / light rail / metro, 'rail' = trains
      cb cells   {"tx,ty": [numbers in b]}
+     lane arrows (v11): when the road has them in OpenStreetMap, one more field after the speed limit (roads: field 12,
+        bridges: field 14): the lanes left to right in the driving direction, '|' between lanes, each lane as letters
+        L left, l slight left, T through, r slight right, R right, U u-turn ('' = no arrow). One-way roads: one list;
+        two-way roads: forward list '^' backward list (forward = the way's drawing direction)
      x  highway exits (v10): [node id, lng, lat, exit number, destinations, route numbers, exit name] at the point
         where an exit ramp leaves a motorway or trunk; destinations and route numbers are ';'-separated, from the
         ramp's destination / destination:ref tags (or the exit's exit_to), '' when not mapped
@@ -55,6 +59,26 @@ def speed_kmh(t):
         n *= 1.609
     n = int(round(n))
     return n if 5 <= n <= 130 else 0
+TURN = {'left': 'L', 'sharp_left': 'L', 'slight_left': 'l', 'through': 'T', 'slight_right': 'r', 'right': 'R',
+        'sharp_right': 'R', 'reverse': 'U'}
+
+
+def lanes_code(v):
+    """'left|through;right|' -> 'L|TR|' ; '' when there is nothing to paint"""
+    if not v:
+        return ''
+    out = []
+    for lane in v.split('|'):
+        out.append(''.join(TURN[x] for x in lane.strip().split(';') if x.strip() in TURN))
+    return '|'.join(out) if any(out) else ''
+
+
+def turn_lanes(t, ow):
+    """the lane arrows of a road (see the file header), '' when not mapped"""
+    if ow:
+        return lanes_code(t.get('turn:lanes') or t.get('turn:lanes:forward' if ow == 1 else 'turn:lanes:backward'))
+    f, b = lanes_code(t.get('turn:lanes:forward')), lanes_code(t.get('turn:lanes:backward'))
+    return f + '^' + b if (f or b) else ''
 DATA = os.path.join(HERE, 'data')
 OUT = os.path.join(HERE, 'out')
 
@@ -204,14 +228,19 @@ class Roads(osmium.SimpleHandler):
                 self.dests.setdefault(w.nodes[i].ref, []).append(
                     (d, r, (pts[i][0], pts[i][1])))
         lim = speed_kmh(t)
+        tl = turn_lanes(t, ow)
         if t.get('bridge', 'no') != 'no' or t.get('tunnel', 'no') != 'no' or t.get('covered') == 'yes':
             kind = 'b' if t.get('bridge', 'no') != 'no' else 't'
             rec += [lead_int(t.get('layer')), 1 if ramp else 0, t.get('bridge:structure', ''), kind, lim]
+            if tl:
+                rec.append(tl)
             self.bridges.append(rec)
         else:
             rec.append(1 if ramp else 0)
             rec.append(pa)
             rec.append(lim)
+            if tl:
+                rec.append(tl)
             self.ways.append(rec)
 
     def rail_way(self, w, t, cls):
