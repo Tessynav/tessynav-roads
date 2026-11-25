@@ -6,8 +6,8 @@ signs that matter while driving, grouped by pole (top sign first), in small area
   signs/index.json         the list of areas, the date and the counts
   signs/report.txt         what was kept and skipped, for checking
 
-Where the city has (almost) no signs (Verdun, LaSalle, Lachine, Pierrefonds, the South Shore, Laval...), the signs
-Mapillary found in street photos are used instead (needs the MAPILLARY_TOKEN secret; such records carry a 4th
+Where the city has no sign of a kind within ~25 m (Verdun, LaSalle, the South Shore, Laval, and the streets the city
+never entered), the signs Mapillary found in street photos are added (needs the MAPILLARY_TOKEN secret; such records carry a 4th
 field "m", and the app then shows the Mapillary credit, as its terms ask).
 
 Sign codes:  s stop · S4 "all approaches" plate · y yield · v<NN> speed limit · u no U-turn · l no left turn ·
@@ -66,7 +66,6 @@ def kind(code, desc):
 
 # ---- Mapillary (signs detected in street photos), for the areas the city list leaves empty ----
 MLY_BOX = (-73.98, 45.38, -73.33, 45.72)      # greater Montréal: Laval to Longueuil, Pierrefonds to Pointe-aux-Trembles
-MLY_MIN = 15                                  # an area with fewer city poles than this asks Mapillary
 
 
 def mly_kind(v):
@@ -145,8 +144,8 @@ def mapillary(tiles, report):
     since = (today - datetime.timedelta(days=5 * 365)).strftime('%Y-%m-%d')
     x0, y0 = math.floor(MLY_BOX[0] * TILE), math.floor(MLY_BOX[1] * TILE)
     x1, y1 = math.floor(MLY_BOX[2] * TILE), math.floor(MLY_BOX[3] * TILE)
-    gaps = ['%d_%d' % (ix, iy) for ix in range(x0, x1 + 1) for iy in range(y0, y1 + 1)
-            if len(tiles.get('%d_%d' % (ix, iy), [])) < MLY_MIN]
+    # (every area: even a borough with city signs has streets the city never entered, like Nuns' Island)
+    gaps = ['%d_%d' % (ix, iy) for ix in range(x0, x1 + 1) for iy in range(y0, y1 + 1)]
 
     def age(k):
         try:
@@ -190,14 +189,20 @@ def mapillary(tiles, report):
         json.dump(cache, f, separators=(',', ':'))
     added = 0
     kinds = collections.Counter()
+    same = lambda a, b: a == b or (a[0] == 'v' and b[0] == 'v') or ({a, b} <= {'s', 'S4'})
     for k in gaps:
         c = cache.get(k)
-        if c and c.get('p'):
-            tiles[k] = tiles.get(k, []) + c['p']
-            added += len(c['p'])
-            for q in c['p']:
-                kinds[q[2][0]] += 1
-    report += ['', 'Mapillary: %d areas with few city signs; asked %d now (%d answered, %d failed), %d still to ask; %d signs added'
+        if not c or not c.get('p'):
+            continue
+        city = [q for q in tiles.get(k, []) if len(q) < 4]
+        for q in c['p']:
+            # only where the city has no sign of that kind within about 25 m
+            if any(abs(q[0] - r[0]) < 0.00032 and abs(q[1] - r[1]) < 0.00023 and any(same(q[2][0], x) for x in r[2]) for r in city):
+                continue
+            tiles.setdefault(k, []).append(q)
+            added += 1
+            kinds[q[2][0]] += 1
+    report += ['', 'Mapillary: %d areas; asked %d now (%d answered, %d failed), %d still to ask; %d signs added'
                % (len(gaps), asked, ok, failed, len([k for k in gaps if k not in cache]), added)] + \
               ['  error ' + e for e in errs] + ['  %s %d' % kv for kv in kinds.most_common()]
 
