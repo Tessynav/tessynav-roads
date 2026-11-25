@@ -15,7 +15,7 @@ concurrency:
 jobs:
   signs:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -23,6 +23,8 @@ jobs:
           python-version: '3.12'
       - name: Read the City of Montréal road signs
         run: python3 signs.py
+        env:
+          MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
       - name: Save the signs in the repository (the app reads them from there)
         continue-on-error: true
         run: |
