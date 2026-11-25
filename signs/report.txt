@@ -1,6 +1,6 @@
 Road signs 2026-11-25
 Rows read: 277426
-Poles kept: 32788 in 353 areas
+Poles kept: 33442 in 353 areas
 
 Signs kept by kind:
   s 17071
@@ -32,24 +32,24 @@ Status values (DESCRIPTION_REP):
   Archive 16008
   En conception 10623
 
-Mapillary: 489 areas with few city signs; asked 489 now (489 answered, 0 failed), 0 still to ask; 2748 signs added
-  s 1245
-  y 263
-  u 262
-  v50 257
-  e 192
-  v40 162
-  v30 146
-  k 84
-  v100 42
-  v70 38
-  l 23
+Mapillary: 594 areas; asked 105 now (105 answered, 0 failed), 0 still to ask; 3402 signs added
+  s 1532
+  v50 316
+  u 316
+  y 292
+  e 277
+  v40 188
+  v30 188
+  k 123
+  v70 44
+  v100 44
+  l 36
+  r 16
   v90 10
-  r 10
-  v60 5
-  v20 3
+  v60 6
+  v20 4
+  v15 3
+  v10 3
   v80 2
-  v15 1
-  v10 1
   v25 1
   v35 1
