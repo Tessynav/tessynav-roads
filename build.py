@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TessyNav road tiles builder v11 (v11: lane arrows (turn:lanes) as an extra last field of road and bridge records; v10: highway exits, for the green exit signs; v9: v9: whole provinces as a grid of regions, tiles written region by region and merged at the borders; v8: schools, for school zone alerts; v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
+"""TessyNav road tiles builder v12 (v12: gas station grounds paved, as lots with no painted spaces; v11: v11: lane arrows (turn:lanes) as an extra last field of road and bridge records; v10: highway exits, for the green exit signs; v9: v9: whole provinces as a grid of regions, tiles written region by region and merged at the borders; v8: schools, for school zone alerts; v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
 v6: speed limits (OpenStreetMap maxspeed, km/h) as the last field of every road and bridge record, 0 = not recorded;
 v7: railway level crossings as marks ('r'), and out/radars.json: Transports Quebec's photo radars and red-light cameras)
 
@@ -141,7 +141,7 @@ class Roads(osmium.SimpleHandler):
         d = 'f' if d == 'forward' else 'b' if d == 'backward' else ''
         self.marks.append([round(n.location.lon, 6), round(n.location.lat, 6), kind, d])
 
-    def parking(self, w, t):
+    def parking(self, w, t, fuel=False):
         """surface parking lots as outlines (closed ways); garages and underground parking are not drawn"""
         if t.get('parking', 'surface') not in ('surface', ''):
             return
@@ -154,7 +154,7 @@ class Roads(osmium.SimpleHandler):
         flat = []
         for lng, lat in pts[:-1]:
             flat += [round(lng, 6), round(lat, 6)]
-        self.parks.append([w.id, flat])
+        self.parks.append([w.id, flat, 'f'] if fuel else [w.id, flat])
 
     def school(self, w, t):
         """a school's grounds as an outline (simplified to at most 20 corners), for school zone alerts"""
@@ -175,6 +175,11 @@ class Roads(osmium.SimpleHandler):
         t = w.tags
         if t.get('amenity') == 'parking':
             self.parking(w, t)
+            return
+        if t.get('amenity') == 'fuel':
+            # (v12) a gas station's grounds, paved like a parking lot (no painted spaces): its driveways are often
+            # not mapped, and the ground there showed as grass
+            self.parking(w, t, fuel=True)
             return
         if t.get('amenity') == 'school':
             self.school(w, t)
@@ -420,7 +425,7 @@ def build(cfg):
              'w/highway=motorway,trunk,primary,secondary,tertiary,unclassified,residential,living_street,service,'
              'motorway_link,trunk_link,primary_link,secondary_link,tertiary_link',
              'w/railway=light_rail,subway,monorail,rail',
-             'w/amenity=parking',
+             'w/amenity=parking', 'w/amenity=fuel',
              'w/amenity=school', 'n/amenity=school',
              'n/highway=crossing,stop,give_way,traffic_signals,motorway_junction',
              'n/railway=level_crossing'])
