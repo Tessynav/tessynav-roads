@@ -1,4 +1,4 @@
-"""TessyNav road signs builder v1 — the floating signs in the app.
+"""TessyNav road signs builder v2 — the floating signs in the app (v2: Mapillary fills the areas the city list leaves empty).
 Reads the City of Montréal's road signs (excluding parking; open data, CC-BY 4.0, updated daily) and keeps only the
 signs that matter while driving, grouped by pole (top sign first), in small area files the app loads near the car:
 
@@ -6,12 +6,16 @@ signs that matter while driving, grouped by pole (top sign first), in small area
   signs/index.json         the list of areas, the date and the counts
   signs/report.txt         what was kept and skipped, for checking
 
+Where the city has (almost) no signs (Verdun, LaSalle, Lachine, Pierrefonds, the South Shore, Laval...), the signs
+Mapillary found in street photos are used instead (needs the MAPILLARY_TOKEN secret; such records carry a 4th
+field "m", and the app then shows the Mapillary credit, as its terms ask).
+
 Sign codes:  s stop · S4 "all approaches" plate · y yield · v<NN> speed limit · u no U-turn · l no left turn ·
              r no right turn · e do not enter · k school zone
 
   python3 signs.py
 """
-import csv, io, json, math, os, re, shutil, urllib.request, collections, datetime
+import csv, io, json, math, os, re, shutil, urllib.request, urllib.parse, collections, datetime
 
 PKG = 'https://donnees.montreal.ca/api/3/action/package_show?id=c5bf5e9c-528b-4c28-b52f-218215992e35'
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'signs')
@@ -58,6 +62,88 @@ def kind(code, desc):
     if d.startswith('ZONE SCOLAIRE'):
         return 'k'
     return None
+
+
+# ---- Mapillary (signs detected in street photos), for the areas the city list leaves empty ----
+MLY_BOX = (-73.98, 45.38, -73.33, 45.72)      # greater Montréal: Laval to Longueuil, Pierrefonds to Pointe-aux-Trembles
+MLY_MIN = 15                                  # an area with fewer city poles than this asks Mapillary
+
+
+def mly_kind(v):
+    v = (v or '').lower()
+    if v.startswith('regulatory--stop--'):
+        return 's'
+    if v.startswith('regulatory--yield--'):
+        return 'y'
+    m = re.match(r'regulatory--maximum-speed-limit-(\d{2,3})--', v)
+    if m and 10 <= int(m.group(1)) <= 100:
+        return 'v' + m.group(1)
+    if v.startswith('regulatory--no-u-turn--'):
+        return 'u'
+    if v.startswith('regulatory--no-left-turn--'):
+        return 'l'
+    if v.startswith('regulatory--no-right-turn--'):
+        return 'r'
+    if v.startswith('regulatory--no-entry--'):
+        return 'e'
+    if 'school-zone' in v:
+        return 'k'
+    return None
+
+
+def mapillary(tiles, report):
+    tok = os.environ.get('MAPILLARY_TOKEN', '').strip()
+    if not tok:
+        report.append('Mapillary: no MAPILLARY_TOKEN secret, skipped')
+        return
+    x0, y0 = math.floor(MLY_BOX[0] * TILE), math.floor(MLY_BOX[1] * TILE)
+    x1, y1 = math.floor(MLY_BOX[2] * TILE), math.floor(MLY_BOX[3] * TILE)
+    asked = added = failed = 0
+    kinds = collections.Counter()
+    since = (datetime.datetime.utcnow() - datetime.timedelta(days=5 * 365)).strftime('%Y-%m-%d')
+    for ix in range(x0, x1 + 1):
+        for iy in range(y0, y1 + 1):
+            key = '%d_%d' % (ix, iy)
+            if len(tiles.get(key, [])) >= MLY_MIN:
+                continue
+            bb = '%.4f,%.4f,%.4f,%.4f' % (ix / TILE, iy / TILE, (ix + 1) / TILE, (iy + 1) / TILE)
+            url = ('https://graph.mapillary.com/map_features?fields=id,object_value,geometry,last_seen_at'
+                   '&limit=2000&bbox=' + bb + '&access_token=' + urllib.parse.quote(tok, safe=''))
+            asked += 1
+            got = []
+            for page in range(5):
+                try:
+                    req = urllib.request.Request(url, headers={'User-Agent': 'tessynav-roads (github.com/Tessynav)'})
+                    with urllib.request.urlopen(req, timeout=60) as r:
+                        j = json.loads(r.read())
+                except Exception as e:
+                    failed += 1
+                    if failed <= 3:
+                        report.append('Mapillary error ' + key + ': ' + str(e)[:120])
+                    break
+                got += j.get('data', [])
+                url = (j.get('paging') or {}).get('next')
+                if not url:
+                    break
+            kept = []
+            for f in got:
+                k = mly_kind(f.get('object_value'))
+                g = f.get('geometry') or {}
+                if not k or g.get('type') != 'Point':
+                    continue
+                if (f.get('last_seen_at') or '9999')[:10] < since:
+                    continue
+                lng, lat = g['coordinates'][0], g['coordinates'][1]
+                # the same sign seen twice: one is enough (same kind within 12 m)
+                if any(q[2][0] == k and abs(q[0] - lng) < 0.00016 and abs(q[1] - lat) < 0.00011 for q in kept):
+                    continue
+                kept.append([round(lng, 6), round(lat, 6), [k], 'm'])
+                kinds[k] += 1
+            if kept:
+                tiles[key] = tiles.get(key, []) + kept
+                added += len(kept)
+    report += ['', 'Mapillary: %d areas asked, %d signs added, %d errors' % (asked, added, failed)] + \
+              ['  %s %d' % kv for kv in kinds.most_common()]
 
 
 def main():
@@ -114,6 +200,8 @@ def main():
             continue
         ix, iy = math.floor(p['lng'] * TILE), math.floor(p['lat'] * TILE)
         tiles['%d_%d' % (ix, iy)].append([round(p['lng'], 6), round(p['lat'], 6), s])
+    mrep = []
+    mapillary(tiles, mrep)
     if os.path.isdir(os.path.join(OUT, 't')):
         shutil.rmtree(os.path.join(OUT, 't'))
     os.makedirs(os.path.join(OUT, 't'), exist_ok=True)
@@ -121,13 +209,13 @@ def main():
         with open(os.path.join(OUT, 't', key + '.json'), 'w', encoding='utf-8') as f:
             json.dump({'v': 1, 'p': ps}, f, separators=(',', ':'), ensure_ascii=False)
     idx = {'v': 1, 'date': datetime.datetime.utcnow().strftime('%Y-%m-%d'), 'tile': TILE, 'tiles': sorted(tiles),
-           'poles': sum(len(v) for v in tiles.values()), 'source': 'Ville de Montréal (CC-BY 4.0)'}
+           'poles': sum(len(v) for v in tiles.values()), 'source': 'Ville de Montréal (CC-BY 4.0); Mapillary'}
     with open(os.path.join(OUT, 'index.json'), 'w', encoding='utf-8') as f:
         json.dump(idx, f, separators=(',', ':'))
     lines = ['Road signs ' + idx['date'], 'Rows read: %d' % len(rows), 'Poles kept: %d in %d areas' % (idx['poles'], len(tiles)),
              '', 'Signs kept by kind:'] + ['  %s %d' % kv for kv in kinds.most_common()] + \
             ['', 'Skipped:'] + ['  %s %d' % kv for kv in skipped.most_common()] + \
-            ['', 'Status values (DESCRIPTION_REP):'] + ['  %s %d' % kv for kv in rep.most_common()]
+            ['', 'Status values (DESCRIPTION_REP):'] + ['  %s %d' % kv for kv in rep.most_common()] + mrep
     with open(os.path.join(OUT, 'report.txt'), 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')
     print('\n'.join(lines))
