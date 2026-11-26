@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TessyNav road tiles builder v13 (v13: driveways kept, drawn narrow; v12: gas station grounds paved, as lots with no painted spaces; v11: v11: lane arrows (turn:lanes) as an extra last field of road and bridge records; v10: highway exits, for the green exit signs; v9: v9: whole provinces as a grid of regions, tiles written region by region and merged at the borders; v8: schools, for school zone alerts; v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
+"""TessyNav road tiles builder v13 (v13: driveways kept, drawn narrow; parking lots and gas stations mapped as multipolygons; v12: gas station grounds paved, as lots with no painted spaces; v11: v11: lane arrows (turn:lanes) as an extra last field of road and bridge records; v10: highway exits, for the green exit signs; v9: v9: whole provinces as a grid of regions, tiles written region by region and merged at the borders; v8: schools, for school zone alerts; v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
 v6: speed limits (OpenStreetMap maxspeed, km/h) as the last field of every road and bridge record, 0 = not recorded;
 v7: railway level crossings as marks ('r'), and out/radars.json: Transports Quebec's photo radars and red-light cameras)
 
@@ -155,6 +155,30 @@ class Roads(osmium.SimpleHandler):
         for lng, lat in pts[:-1]:
             flat += [round(lng, 6), round(lat, 6)]
         self.parks.append([w.id, flat, 'f'] if fuel else [w.id, flat])
+
+    def area(self, a):
+        """(v13) parking lots and gas stations mapped as multipolygons (a relation with an outer ring, often the big
+        lots at malls and stores): they were skipped, so those lots showed as grass. Closed ways are done in way()."""
+        if a.from_way():
+            return
+        t = a.tags
+        am = t.get('amenity')
+        if am not in ('parking', 'fuel'):
+            return
+        if am == 'parking' and t.get('parking', 'surface') not in ('surface', ''):
+            return
+        try:
+            for k, ring in enumerate(a.outer_rings()):
+                pts = [(nd.lon, nd.lat) for nd in ring]
+                if len(pts) < 4:
+                    continue
+                flat = []
+                for lng, lat in pts[:-1]:
+                    flat += [round(lng, 6), round(lat, 6)]
+                rid = -(a.orig_id() * 10 + min(k, 9))   # (negative: never the same as a way's id)
+                self.parks.append([rid, flat, 'f'] if am == 'fuel' else [rid, flat])
+        except osmium.InvalidLocationError:
+            return
 
     def school(self, w, t):
         """a school's grounds as an outline (simplified to at most 20 corners), for school zone alerts"""
@@ -426,12 +450,12 @@ def build(cfg):
         cut = os.path.join(DATA, 'cut.osm.pbf')
         roads = os.path.join(DATA, 'roads.osm.pbf')
         box = ','.join(str(v) for v in (b[0] - PAD, b[1] - PAD, b[2] + PAD, b[3] + PAD))
-        run(['osmium', 'extract', '-b', box, '-s', 'complete_ways', '--overwrite', '-o', cut, src])
+        run(['osmium', 'extract', '-b', box, '-s', 'smart', '--overwrite', '-o', cut, src])   # (v13: smart = complete multipolygons too)
         run(['osmium', 'tags-filter', '--overwrite', '-o', roads, cut,
              'w/highway=motorway,trunk,primary,secondary,tertiary,unclassified,residential,living_street,service,'
              'motorway_link,trunk_link,primary_link,secondary_link,tertiary_link',
              'w/railway=light_rail,subway,monorail,rail',
-             'w/amenity=parking', 'w/amenity=fuel',
+             'w/amenity=parking', 'w/amenity=fuel', 'r/amenity=parking', 'r/amenity=fuel',
              'w/amenity=school', 'n/amenity=school',
              'n/highway=crossing,stop,give_way,traffic_signals,motorway_junction',
              'n/railway=level_crossing'])
