@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TessyNav road tiles builder v12 (v12: gas station grounds paved, as lots with no painted spaces; v11: v11: lane arrows (turn:lanes) as an extra last field of road and bridge records; v10: highway exits, for the green exit signs; v9: v9: whole provinces as a grid of regions, tiles written region by region and merged at the borders; v8: schools, for school zone alerts; v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
+"""TessyNav road tiles builder v13 (v13: driveways kept, drawn narrow; v12: gas station grounds paved, as lots with no painted spaces; v11: v11: lane arrows (turn:lanes) as an extra last field of road and bridge records; v10: highway exits, for the green exit signs; v9: v9: whole provinces as a grid of regions, tiles written region by region and merged at the borders; v8: schools, for school zone alerts; v3: parking lots, aisles, yield signs; v4: traffic lights; v5: REM at ground level;
 v6: speed limits (OpenStreetMap maxspeed, km/h) as the last field of every road and bridge record, 0 = not recorded;
 v7: railway level crossings as marks ('r'), and out/radars.json: Transports Quebec's photo radars and red-light cameras)
 
@@ -194,9 +194,11 @@ class Roads(osmium.SimpleHandler):
         if hw not in CLS and hw not in LINKS:
             return
         sv = t.get('service', '')
-        if hw == 'service' and 'driveway' in sv:
-            return
+        # (v13, Nov 25) driveways are kept now (they were left out, so entrances to lots, gas stations and shops showed as
+        # grass and the car shook driving in): drawn narrow, like a parking aisle without parking spaces (pa = 2)
         pa = 1 if (hw == 'service' and re.search(r'parking_aisle|drive-through', sv)) else 0
+        if hw == 'service' and 'driveway' in sv:
+            pa = 2
         ramp = hw in LINKS
         cls = CLS[hw[:-5] if ramp else hw]
         ow = 0
@@ -211,7 +213,9 @@ class Roads(osmium.SimpleHandler):
                 wd = max(3.5 if ow else 6, lanes * 3.4 + (2 if cls == 'minor' and not ow else 0))
             else:
                 wd = road_w(cls, ow, ramp)
-            if pa:
+            if pa == 2:
+                wd = 3.5
+            elif pa:
                 wd = 5.5 if not ow else 3.5
         try:
             pts = [(nd.lon, nd.lat) for nd in w.nodes]
