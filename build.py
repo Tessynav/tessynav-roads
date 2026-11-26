@@ -331,7 +331,9 @@ def download(cfg):
     for name, url in cfg['sources'].items():
         dst = os.path.join(DATA, name + '.osm.pbf')
         if url.startswith('http'):
-            run(['curl', '-L', '--fail', '--retry', '3', '-o', dst, url])
+            # (a dropped connection, curl error 56, used to stop the whole build: it now retries on any error and
+            # carries on from where the download stopped)
+            run(['curl', '-L', '--fail', '--retry', '8', '--retry-all-errors', '--retry-delay', '10', '-C', '-', '-o', dst, url])
         else:
             run(['cp', url, dst])
 
