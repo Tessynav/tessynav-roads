@@ -1,36 +1,36 @@
-Road signs 2026-11-26
-Rows read: 277439
-Poles kept: 33449 in 353 areas
+Road signs 2026-11-27
+Rows read: 277464
+Poles kept: 33454 in 353 areas
 
 Signs kept by kind:
-  s 17068
-  S4 9655
-  v30 6996
-  k 2314
-  e 2083
+  s 17071
+  S4 9657
+  v30 6995
+  k 2316
+  e 2084
   v40 1874
   v50 788
   u 612
   l 279
-  y 209
-  v10 161
-  r 102
+  y 208
+  v10 162
+  r 104
   v20 50
   v60 41
   v70 11
 
 Skipped:
-  cancelled 25836
-  not in place (Enlevé) 24602
-  not in place (Archive) 13699
-  not in place (En conception) 10247
+  cancelled 25842
+  not in place (Enlevé) 24612
+  not in place (Archive) 13713
+  not in place (En conception) 10197
   off the street 2708
 
 Status values (DESCRIPTION_REP):
-  Réel 219563
-  Enlevé 31218
-  Archive 16008
-  En conception 10650
+  Réel 219608
+  Enlevé 31230
+  Archive 16022
+  En conception 10604
 
 Mapillary: 594 areas; asked 0 now (0 answered, 0 failed), 0 still to ask; 3402 signs added
   s 1532
